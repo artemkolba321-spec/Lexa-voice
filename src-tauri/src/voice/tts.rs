@@ -18,7 +18,7 @@ pub struct TtsEngine {
 impl TtsEngine {
     /// Создание TTS-движка с моделью Qwen3-TTS.
     /// `model_path` — путь к директории модели Qwen3-TTS.
-    /// Если None — пытается загрузить из локального кеша HuggingFace или скачивает модель.
+    /// Если None — ищет модель только в локальных стандартных каталогах.
     pub fn new(model_path: Option<String>) -> Result<Self> {
         // Пробуем локальный путь, если указан
         if let Some(path) = &model_path {
