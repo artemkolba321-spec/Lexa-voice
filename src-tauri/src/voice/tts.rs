@@ -1,7 +1,7 @@
 /// TTS (Text-to-Speech) через AnyTTS (чистый Rust, без Python).
 ///
-/// Поддерживаемые модели: Qwen3-TTS, Kokoro, Voxtral, VibeVoice, OmniVoice.
-/// Модель Qwen3-TTS скачивается автоматически с HuggingFace при первом запуске.
+/// Поддерживаемые модели: Qwen3-TTS.
+/// Загрузка выполняется только из локальной директории: запуск не требует сети.
 
 use anyhow::{Context, Result};
 use any_tts::models::qwen3_tts::Qwen3TtsModel;
@@ -39,9 +39,9 @@ impl TtsEngine {
             }
         }
 
-        // Скачиваем с HuggingFace
-        eprintln!("[TTS] Model not found locally, downloading from HuggingFace...");
-        Self::download_and_load()
+        anyhow::bail!(
+            "Локальная модель Qwen3-TTS не найдена. Помести её в models/Qwen3-TTS или укажи путь к модели."
+        )
     }
 
     /// Загрузка модели из локальной директории
@@ -55,20 +55,6 @@ impl TtsEngine {
             .context("Не удалось загрузить модель Qwen3-TTS. Убедись, что модель скачана и путь верный.")?;
 
         eprintln!("[TTS] Model loaded OK from: {}", path);
-        Ok(Self { model })
-    }
-
-    /// Автоматическая загрузка модели с HuggingFace
-    fn download_and_load() -> Result<Self> {
-        eprintln!("[TTS] Downloading Qwen3-TTS from HuggingFace...");
-
-        let config = TtsConfig::new(ModelType::Qwen3Tts)
-            .with_hf_model_id("Qwen/Qwen2.5-0.5B");
-
-        let model = Qwen3TtsModel::load(config)
-            .context("Не удалось скачать и загрузить модель Qwen3-TTS с HuggingFace. Проверь интернет.")?;
-
-        eprintln!("[TTS] Model downloaded and loaded OK");
         Ok(Self { model })
     }
 
@@ -95,6 +81,8 @@ impl TtsEngine {
         let sink = Sink::connect_new(&mixer);
         sink.append(rodio::buffer::SamplesBuffer::new(1, sample_rate, pcm));
         sink.play();
+        // Keep the output stream and sink alive until playback has completed.
+        sink.sleep_until_end();
 
         Ok(())
     }
