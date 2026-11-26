@@ -93,21 +93,16 @@ impl SttEngine {
     /// Извлечение команды, произнесённой после wake word.
     pub fn extract_command_after_wake_word(text: &str) -> Option<String> {
         let lower = text.to_lowercase();
-        let mut found_wake = false;
+        let words: Vec<&str> = lower.split_whitespace().collect();
 
-        for word in lower.split_whitespace() {
+        for (index, word) in words.iter().enumerate() {
             let normalized = word.trim_matches(|c: char| !c.is_alphanumeric());
-            if !found_wake {
-                if normalized == WAKE_WORD {
-                    found_wake = true;
-                    continue;
-                }
-            } else {
-                let command = word.trim_start_matches(|c: char| !c.is_alphanumeric())
-                    .trim();
-                if !command.is_empty() {
-                    return Some(command.to_string());
-                }
+            if normalized == WAKE_WORD {
+                let command = words[index + 1..]
+                    .join(" ")
+                    .trim_matches(|c: char| !c.is_whitespace() && !c.is_alphanumeric())
+                    .to_string();
+                return if command.is_empty() { None } else { Some(command) };
             }
         }
 
@@ -140,4 +135,31 @@ pub fn find_vosk_model() -> Result<PathBuf> {
         "Модель Vosk не найдена. Положи модель в \
          src-tauri/models/vosk-model-small-ru-0.22/"
     ))
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::SttEngine;
+
+    #[test]
+    fn extracts_entire_command_after_wake_word() {
+        assert_eq!(
+            SttEngine::extract_command_after_wake_word("Лекса включи свет в гостиной"),
+            Some("включи свет в гостиной".to_string())
+        );
+    }
+
+    #[test]
+    fn returns_none_when_wake_word_has_no_command() {
+        assert_eq!(SttEngine::extract_command_after_wake_word("Лекса!"), None);
+    }
+
+    #[test]
+    fn ignores_words_before_wake_word() {
+        assert_eq!(
+            SttEngine::extract_command_after_wake_word("эй, Лекса, который час?"),
+            Some("который час?".to_string())
+        );
+    }
 }
