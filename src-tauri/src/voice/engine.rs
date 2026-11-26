@@ -7,7 +7,6 @@
 /// - speak() запускает TTS в отдельном потоке.
 
 use anyhow::{Context, Result};
-use std::io::Write;
 use std::path::PathBuf;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
@@ -122,15 +121,9 @@ impl VoiceEngine {
         audio_host: AudioHost,
         device_name: Option<String>,
     ) {
+        // Keep diagnostics portable; never assume a Unix-only /tmp path.
         fn log(msg: &str) {
-            let timestamp = chrono::Local::now().format("%H:%M:%S%.3f");
-            let entry = format!("[{}] {}\n", timestamp, msg);
-            let _ = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open("/tmp/lexa_debug.log")
-                .and_then(|mut f| f.write_all(entry.as_bytes()));
-            eprintln!("{}", msg);
+            eprintln!("[Lexa voice] {msg}");
         }
 
         log("[Engine] audio_worker START");
@@ -156,6 +149,8 @@ impl VoiceEngine {
                 log(&format!("[Engine] TTS init FAILED: {}", error));
                 let message = format!("Не удалось инициализировать TTS: {error}");
                 let _ = events.send(VoiceEvent::Error(message));
+                listening.store(false, Ordering::Release);
+                Self::set_state_shared(&state, &events, VoiceState::Idle);
                 return;
             }
         };
