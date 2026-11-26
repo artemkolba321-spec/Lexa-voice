@@ -142,6 +142,8 @@ impl VoiceEngine {
                 log(&format!("[Engine] STT init FAILED: {}", error));
                 let message = format!("Не удалось инициализировать STT: {error}");
                 let _ = events.send(VoiceEvent::Error(message));
+                listening.store(false, Ordering::Release);
+                Self::set_state_shared(&state, &events, VoiceState::Idle);
                 return;
             }
         };
@@ -165,10 +167,9 @@ impl VoiceEngine {
         log("[Engine] Starting AudioCapture...");
         let capture = match AudioCapture::start(
             Arc::new(move |audio: &[f32]| {
-            eprintln!("[Engine] audio_callback: {} samples", audio.len());
-            let _ = std::fs::write("/tmp/lexa_debug.log", format!("[Audio] callback: {} samples\n", audio.len()));
-            let frame = audio.to_vec();
-            let _ = audio_tx.try_send(frame);
+            // The real-time audio callback must not perform disk I/O or logging.
+            // Keep it bounded: copy the frame and enqueue it without blocking.
+            let _ = audio_tx.try_send(audio.to_vec());
         }),
             audio_host,
             device_name.as_deref(),
@@ -179,6 +180,7 @@ impl VoiceEngine {
                 log(&format!("[Engine] AudioCapture FAILED: {}", error));
                 let message = format!("Не удалось запустить микрофон: {error}");
                 let _ = events.send(VoiceEvent::Error(message));
+                listening.store(false, Ordering::Release);
                 Self::set_state_shared(
                     &state,
                     &events,
