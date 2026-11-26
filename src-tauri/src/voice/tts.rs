@@ -9,9 +9,10 @@ use any_tts::traits::TtsModel;
 use any_tts::{ModelType, SynthesisRequest, TtsConfig};
 use rodio::Sink;
 use std::path::Path;
+use std::process::Command;
 
 pub struct TtsEngine {
-    model: Qwen3TtsModel,
+    model: Option<Qwen3TtsModel>,
 }
 
 impl TtsEngine {
@@ -39,8 +40,14 @@ impl TtsEngine {
             }
         }
 
+        // A lightweight OS speech engine is a useful offline fallback when the
+        // optional neural voice model has not been installed yet.
+        if Self::system_tts_available() {
+            return Ok(Self { model: None });
+        }
+
         anyhow::bail!(
-            "Локальная модель Qwen3-TTS не найдена. Помести её в models/Qwen3-TTS или укажи путь к модели."
+            "Не найдена локальная модель Qwen3-TTS и системный синтезатор речи.              Установи espeak-ng (Linux), либо добавь локальную модель в models/Qwen3-TTS."
         )
     }
 
@@ -55,15 +62,17 @@ impl TtsEngine {
             .context("Не удалось загрузить модель Qwen3-TTS. Убедись, что модель скачана и путь верный.")?;
 
         eprintln!("[TTS] Model loaded OK from: {}", path);
-        Ok(Self { model })
+        Ok(Self { model: Some(model) })
     }
 
     /// Генерация аудио из текста
     pub fn synthesize(&self, text: &str) -> Result<(Vec<f32>, u32)> {
+        let model = self.model.as_ref()
+            .context("Нейросетевая модель Qwen3-TTS не загружена; доступен только системный синтез речи.")?;
         let request = SynthesisRequest::new(text)
             .with_language("ru");
 
-        let samples = self.model.synthesize(&request)
+        let samples = model.synthesize(&request)
             .context("Ошибка синтеза речи")?;
 
         Ok((samples.samples.clone(), samples.sample_rate))
@@ -71,20 +80,84 @@ impl TtsEngine {
 
     /// Воспроизведение текста через TTS
     pub fn speak(&self, text: &str) -> Result<()> {
-        let (pcm, sample_rate) = self.synthesize(text)?;
+        if self.model.is_none() {
+            return Self::speak_with_system_voice(text);
+        }
 
+        let (pcm, sample_rate) = self.synthesize(text)?;
         let stream = rodio::OutputStreamBuilder::from_default_device()
             .context("Не удалось открыть устройство вывода")?
             .open_stream()?;
-
         let mixer = stream.mixer();
         let sink = Sink::connect_new(&mixer);
         sink.append(rodio::buffer::SamplesBuffer::new(1, sample_rate, pcm));
         sink.play();
         // Keep the output stream and sink alive until playback has completed.
         sink.sleep_until_end();
-
         Ok(())
+    }
+
+    fn system_tts_available() -> bool {
+        #[cfg(target_os = "linux")]
+        {
+            Command::new("espeak-ng").arg("--version").output().is_ok()
+                || Command::new("espeak").arg("--version").output().is_ok()
+        }
+        #[cfg(target_os = "macos")]
+        {
+            Command::new("say").arg("-v").arg("?").output().is_ok()
+        }
+        #[cfg(target_os = "windows")]
+        {
+            Command::new("powershell").arg("-NoProfile").arg("-Command").arg("$PSVersionTable.PSVersion").output().is_ok()
+        }
+    }
+
+    fn speak_with_system_voice(text: &str) -> Result<()> {
+        #[cfg(target_os = "linux")]
+        {
+            let executable = if Command::new("espeak-ng").arg("--version").output().is_ok() {
+                "espeak-ng"
+            } else {
+                "espeak"
+            };
+            let status = Command::new(executable)
+                .arg("-v").arg("ru")
+                .arg(text)
+                .status()
+                .context("Не удалось запустить espeak-ng/espeak. Установи espeak-ng для русской речи.")?;
+            if !status.success() {
+                anyhow::bail!("Системный синтезатор речи завершился с ошибкой: {status}");
+            }
+            return Ok(());
+        }
+        #[cfg(target_os = "macos")]
+        {
+            let status = Command::new("say")
+                .arg(text)
+                .status()
+                .context("Не удалось запустить системный синтезатор say")?;
+            if !status.success() {
+                anyhow::bail!("Системный синтезатор say завершился с ошибкой: {status}");
+            }
+            return Ok(());
+        }
+        #[cfg(target_os = "windows")]
+        {
+            let status = Command::new("powershell")
+                .arg("-NoProfile")
+                .arg("-Command")
+                .arg("$s = New-Object System.Speech.Synthesis.SpeechSynthesizer; $s.Speak($env:LEXA_TTS_TEXT)")
+                .env("LEXA_TTS_TEXT", text)
+                .status()
+                .context("Не удалось запустить Windows Speech")?;
+            if !status.success() {
+                anyhow::bail!("Windows Speech завершился с ошибкой: {status}");
+            }
+            return Ok(());
+        }
+        #[allow(unreachable_code)]
+        anyhow::bail!("Системный синтезатор речи не поддерживается на этой платформе")
     }
 
     /// Проверка доступности модели
