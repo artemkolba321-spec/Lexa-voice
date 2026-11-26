@@ -173,6 +173,7 @@ impl AudioCapture {
         let source_rate = config.sample_rate.0;
         let block_samples = ((source_rate as u64 * BLOCK_MS as u64) / 1000) as usize;
         let running_callback = Arc::clone(&running);
+        let mut pending = Vec::<f32>::with_capacity(block_samples * 2);
 
         let stream = device.build_input_stream(
             config,
@@ -190,7 +191,6 @@ impl AudioCapture {
 
                 // Не ресемплируем отдельные маленькие callback-блоки:
                 // накапливаем ровно 100 мс, чтобы не терять временную сетку.
-                let mut pending = PENDING_AUDIO.with(|_| Vec::<f32>::new());
                 pending.extend(mono);
                 while pending.len() >= block_samples {
                     let source_block: Vec<f32> = pending.drain(..block_samples).collect();
