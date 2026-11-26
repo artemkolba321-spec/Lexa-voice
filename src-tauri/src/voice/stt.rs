@@ -6,7 +6,7 @@
 
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
-use vosk::{Model, Recognizer};
+use vosk::{DecodingState, Model, Recognizer};
 
 const WAKE_WORD: &str = "лекса";
 const SAMPLE_RATE: f32 = 16000.0;
@@ -60,26 +60,19 @@ impl SttEngine {
             return None;
         }
 
-        // Подаём аудио в Vosk
-        let _ = self.recognizer.accept_waveform(&pcm);
-
-        // Проверяем partial_result (мгновенный ответ)
-        let partial = self.recognizer.partial_result();
-        let partial_text = partial.partial.trim();
-        if !partial_text.is_empty() {
-            return Some(partial_text.to_string());
-        }
-
-        // Потом проверяем result (завершённая фраза)
-        let result = self.recognizer.result();
-        if let Some(single) = result.single() {
-            let text = single.text.trim().to_string();
-            if !text.is_empty() {
-                return Some(text);
+        // Only emit finalized utterances. Partial hypotheses can change on the
+        // next audio frame and must not trigger wake words or duplicate commands.
+        match self.recognizer.accept_waveform(&pcm) {
+            Ok(DecodingState::Finalized) => {
+                let result = self.recognizer.result();
+                result.single().and_then(|single| {
+                    let text = single.text.trim();
+                    (!text.is_empty()).then(|| text.to_string())
+                })
             }
+            Ok(DecodingState::Running) => None,
+            Ok(DecodingState::Failed) | Err(_) => None,
         }
-
-        None
     }
 
     /// Проверка наличия wake word «Лекса».
