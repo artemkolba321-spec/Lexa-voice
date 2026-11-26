@@ -42,13 +42,9 @@ impl TtsEngine {
 
         // A lightweight OS speech engine is a useful offline fallback when the
         // optional neural voice model has not been installed yet.
-        if Self::system_tts_available() {
-            return Ok(Self { model: None });
-        }
-
-        anyhow::bail!(
-            "Не найдена локальная модель Qwen3-TTS и системный синтезатор речи.              Установи espeak-ng (Linux), либо добавь локальную модель в models/Qwen3-TTS."
-        )
+        // Do not block microphone/STT startup if no speech backend is installed.
+        // speak() will return a platform-specific setup hint when it is invoked.
+        Ok(Self { model: None })
     }
 
     /// Загрузка модели из локальной директории
@@ -95,22 +91,6 @@ impl TtsEngine {
         // Keep the output stream and sink alive until playback has completed.
         sink.sleep_until_end();
         Ok(())
-    }
-
-    fn system_tts_available() -> bool {
-        #[cfg(target_os = "linux")]
-        {
-            Command::new("espeak-ng").arg("--version").output().is_ok()
-                || Command::new("espeak").arg("--version").output().is_ok()
-        }
-        #[cfg(target_os = "macos")]
-        {
-            Command::new("say").arg("-v").arg("?").output().is_ok()
-        }
-        #[cfg(target_os = "windows")]
-        {
-            Command::new("powershell").arg("-NoProfile").arg("-Command").arg("$PSVersionTable.PSVersion").output().is_ok()
-        }
     }
 
     fn speak_with_system_voice(text: &str) -> Result<()> {
