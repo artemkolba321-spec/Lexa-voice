@@ -198,8 +198,14 @@ impl VoiceEngine {
             };
 
             frame_count += 1;
-            if frame_count <= 5 || frame_count % 100 == 0 {
-                eprintln!("[Engine] frame #{}: {} samples", frame_count, audio.len());
+            if frame_count <= 3 || frame_count % 10 == 0 {
+                let rms = (audio.iter().map(|sample| sample * sample).sum::<f32>()
+                    / audio.len().max(1) as f32).sqrt();
+                let peak = audio.iter().fold(0.0_f32, |max, sample| max.max(sample.abs()));
+                eprintln!(
+                    "[Engine] audio block #{}: {} samples at 16 kHz, RMS={:.5}, peak={:.5}",
+                    frame_count, audio.len(), rms, peak
+                );
             }
 
             if !listening.load(Ordering::Relaxed) {
