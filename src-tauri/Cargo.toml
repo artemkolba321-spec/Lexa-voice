@@ -1,0 +1,29 @@
+[package]
+name = "lexa"
+version = "0.1.0"
+description = "Lexa — локальный мульти-инструмент"
+authors = ["Lexa contributors"]
+edition = "2021"
+
+[lib]
+name = "lexa_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+chrono = { version = "0.4", features = ["serde"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tauri = { version = "2", features = ["tray-icon"] }
+cpal = "=0.15.3"
+vosk = "0.3.1"
+open = "5"
+url = "2"
+rodio = "0.21"
+tempfile = "3"
+anyhow = "1"
+regex = "1"
+num-traits = "0.2"
+any-tts = "0.1"
