@@ -5,6 +5,7 @@ import {
   Send, ShieldCheck, Sparkles, Volume2, Zap,
 } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 
 const isTauri = () => typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 
@@ -49,6 +50,46 @@ export default function App() {
   const [audioDevices, setAudioDevices] = useState<AudioDevice[]>([]);
   const [audioHosts, setAudioHosts] = useState<AudioHost[]>([]);
   const chatRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!isTauri()) return;
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+
+    listen<{ kind: string; state?: string; text?: string }>('lexa-voice-event', ({ payload }) => {
+      const time = new Date().toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
+      if (payload.kind === 'state') {
+        const state = payload.state || '';
+        if (state.startsWith('Error')) {
+          setVoiceStatus('error');
+          setListening(false);
+          setActive(false);
+        } else if (state === 'Idle') {
+          setVoiceStatus('idle');
+          setListening(false);
+          setActive(false);
+        } else {
+          setActive(true);
+          setListening(true);
+          setVoiceStatus(state === 'Hearing' ? 'hearing' : state === 'Speaking' ? 'speaking' : 'listening');
+        }
+      } else if (payload.kind === 'command' && payload.text) {
+        setChat(prev => [...prev, { id: `voice-user-${Date.now()}`, role: 'user', text: payload.text!, time }]);
+      } else if (payload.kind === 'response' && payload.text) {
+        setChat(prev => [...prev, { id: `voice-lexa-${Date.now()}`, role: 'lexa', text: payload.text!, time }]);
+      } else if (payload.kind === 'error' && payload.text) {
+        setToast(payload.text);
+      }
+    }).then(handler => {
+      if (disposed) handler();
+      else unlisten = handler;
+    }).catch(error => setToast(`Не удалось подключить события голоса: ${String(error)}`));
+
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, []);
 
   useEffect(() => {
     localStorage.setItem('lexa-preferences', JSON.stringify(prefs));
@@ -108,9 +149,14 @@ export default function App() {
         try {
           const mic = prefs.microphone === 'Системное устройство по умолчанию' ? null : prefs.microphone;
           await invoke('start_listen', { sttModelPath: null, audioHostName: prefs.audioHost.toLowerCase(), deviceName: mic });
+          setListening(true);
+          setVoiceStatus('listening');
           setToast('Лекса слушает. Скажи "Лекса" и команду.');
         } catch (error) {
           const msg = error instanceof Error ? error.message : String(error);
+          setActive(false);
+          setListening(false);
+          setVoiceStatus('error');
           setToast(`Голосовой движок не подключён — ${msg}`);
         }
       } else {
@@ -190,6 +236,7 @@ export default function App() {
       try {
         const mic = prefs.microphone === 'Системное устройство по умолчанию' ? null : prefs.microphone;
         await invoke('start_listen', { sttModelPath: null, audioHostName: prefs.audioHost.toLowerCase(), deviceName: mic });
+        setActive(true);
         setListening(true);
         setVoiceStatus('listening');
         setToast('Лекса слушает. Скажи "Лекса" и команду.');

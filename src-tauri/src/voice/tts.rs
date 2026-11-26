@@ -1,7 +1,7 @@
 /// TTS (Text-to-Speech) через AnyTTS (чистый Rust, без Python).
 ///
-/// Поддерживаемые модели: Qwen3-TTS, Kokoro, Voxtral, VibeVoice, OmniVoice.
-/// Модель Qwen3-TTS скачивается автоматически с HuggingFace при первом запуске.
+/// Поддерживаемые модели: Qwen3-TTS.
+/// Загрузка выполняется только из локальной директории: запуск не требует сети.
 
 use anyhow::{Context, Result};
 use any_tts::models::qwen3_tts::Qwen3TtsModel;
@@ -9,15 +9,16 @@ use any_tts::traits::TtsModel;
 use any_tts::{ModelType, SynthesisRequest, TtsConfig};
 use rodio::Sink;
 use std::path::Path;
+use std::process::Command;
 
 pub struct TtsEngine {
-    model: Qwen3TtsModel,
+    model: Option<Qwen3TtsModel>,
 }
 
 impl TtsEngine {
     /// Создание TTS-движка с моделью Qwen3-TTS.
     /// `model_path` — путь к директории модели Qwen3-TTS.
-    /// Если None — пытается загрузить из локального кеша HuggingFace или скачивает модель.
+    /// Если None — ищет модель только в локальных стандартных каталогах.
     pub fn new(model_path: Option<String>) -> Result<Self> {
         // Пробуем локальный путь, если указан
         if let Some(path) = &model_path {
@@ -39,9 +40,11 @@ impl TtsEngine {
             }
         }
 
-        // Скачиваем с HuggingFace
-        eprintln!("[TTS] Model not found locally, downloading from HuggingFace...");
-        Self::download_and_load()
+        // A lightweight OS speech engine is a useful offline fallback when the
+        // optional neural voice model has not been installed yet.
+        // Do not block microphone/STT startup if no speech backend is installed.
+        // speak() will return a platform-specific setup hint when it is invoked.
+        Ok(Self { model: None })
     }
 
     /// Загрузка модели из локальной директории
@@ -55,29 +58,17 @@ impl TtsEngine {
             .context("Не удалось загрузить модель Qwen3-TTS. Убедись, что модель скачана и путь верный.")?;
 
         eprintln!("[TTS] Model loaded OK from: {}", path);
-        Ok(Self { model })
-    }
-
-    /// Автоматическая загрузка модели с HuggingFace
-    fn download_and_load() -> Result<Self> {
-        eprintln!("[TTS] Downloading Qwen3-TTS from HuggingFace...");
-
-        let config = TtsConfig::new(ModelType::Qwen3Tts)
-            .with_hf_model_id("Qwen/Qwen2.5-0.5B");
-
-        let model = Qwen3TtsModel::load(config)
-            .context("Не удалось скачать и загрузить модель Qwen3-TTS с HuggingFace. Проверь интернет.")?;
-
-        eprintln!("[TTS] Model downloaded and loaded OK");
-        Ok(Self { model })
+        Ok(Self { model: Some(model) })
     }
 
     /// Генерация аудио из текста
     pub fn synthesize(&self, text: &str) -> Result<(Vec<f32>, u32)> {
+        let model = self.model.as_ref()
+            .context("Нейросетевая модель Qwen3-TTS не загружена; доступен только системный синтез речи.")?;
         let request = SynthesisRequest::new(text)
             .with_language("ru");
 
-        let samples = self.model.synthesize(&request)
+        let samples = model.synthesize(&request)
             .context("Ошибка синтеза речи")?;
 
         Ok((samples.samples.clone(), samples.sample_rate))
@@ -85,18 +76,68 @@ impl TtsEngine {
 
     /// Воспроизведение текста через TTS
     pub fn speak(&self, text: &str) -> Result<()> {
-        let (pcm, sample_rate) = self.synthesize(text)?;
+        if self.model.is_none() {
+            return Self::speak_with_system_voice(text);
+        }
 
+        let (pcm, sample_rate) = self.synthesize(text)?;
         let stream = rodio::OutputStreamBuilder::from_default_device()
             .context("Не удалось открыть устройство вывода")?
             .open_stream()?;
-
         let mixer = stream.mixer();
         let sink = Sink::connect_new(&mixer);
         sink.append(rodio::buffer::SamplesBuffer::new(1, sample_rate, pcm));
         sink.play();
-
+        // Keep the output stream and sink alive until playback has completed.
+        sink.sleep_until_end();
         Ok(())
+    }
+
+    fn speak_with_system_voice(text: &str) -> Result<()> {
+        #[cfg(target_os = "linux")]
+        {
+            let executable = if Command::new("espeak-ng").arg("--version").output().is_ok() {
+                "espeak-ng"
+            } else {
+                "espeak"
+            };
+            let status = Command::new(executable)
+                .arg("-v").arg("ru")
+                .arg(text)
+                .status()
+                .context("Не удалось запустить espeak-ng/espeak. Установи espeak-ng для русской речи.")?;
+            if !status.success() {
+                anyhow::bail!("Системный синтезатор речи завершился с ошибкой: {status}");
+            }
+            return Ok(());
+        }
+        #[cfg(target_os = "macos")]
+        {
+            let status = Command::new("say")
+                .arg(text)
+                .status()
+                .context("Не удалось запустить системный синтезатор say")?;
+            if !status.success() {
+                anyhow::bail!("Системный синтезатор say завершился с ошибкой: {status}");
+            }
+            return Ok(());
+        }
+        #[cfg(target_os = "windows")]
+        {
+            let status = Command::new("powershell")
+                .arg("-NoProfile")
+                .arg("-Command")
+                .arg("$s = New-Object System.Speech.Synthesis.SpeechSynthesizer; $s.Speak($env:LEXA_TTS_TEXT)")
+                .env("LEXA_TTS_TEXT", text)
+                .status()
+                .context("Не удалось запустить Windows Speech")?;
+            if !status.success() {
+                anyhow::bail!("Windows Speech завершился с ошибкой: {status}");
+            }
+            return Ok(());
+        }
+        #[allow(unreachable_code)]
+        anyhow::bail!("Системный синтезатор речи не поддерживается на этой платформе")
     }
 
     /// Проверка доступности модели

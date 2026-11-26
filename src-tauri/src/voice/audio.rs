@@ -302,14 +302,7 @@ impl AudioCapture {
                 let denoised = noise_suppressor.process(&resampled);
 
                 // 4. VAD (Voice Activity Detection)
-                let (_is_speech, state_changed) = vad.process_frame(&denoised);
-                if state_changed {
-                    if vad.state() == &crate::voice::ears::VadState::Speech {
-                        eprintln!("[Audio] VAD: Speech detected");
-                    } else {
-                        eprintln!("[Audio] VAD: Silence detected");
-                    }
-                }
+                let _ = vad.process_frame(&denoised);
 
                 // Передаём обработанный сигнал в STT
                 callback(&denoised);

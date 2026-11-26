@@ -6,7 +6,7 @@
 
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
-use vosk::{Model, Recognizer};
+use vosk::{DecodingState, Model, Recognizer};
 
 const WAKE_WORD: &str = "лекса";
 const SAMPLE_RATE: f32 = 16000.0;
@@ -60,26 +60,19 @@ impl SttEngine {
             return None;
         }
 
-        // Подаём аудио в Vosk
-        let _ = self.recognizer.accept_waveform(&pcm);
-
-        // Проверяем partial_result (мгновенный ответ)
-        let partial = self.recognizer.partial_result();
-        let partial_text = partial.partial.trim();
-        if !partial_text.is_empty() {
-            return Some(partial_text.to_string());
-        }
-
-        // Потом проверяем result (завершённая фраза)
-        let result = self.recognizer.result();
-        if let Some(single) = result.single() {
-            let text = single.text.trim().to_string();
-            if !text.is_empty() {
-                return Some(text);
+        // Only emit finalized utterances. Partial hypotheses can change on the
+        // next audio frame and must not trigger wake words or duplicate commands.
+        match self.recognizer.accept_waveform(&pcm) {
+            Ok(DecodingState::Finalized) => {
+                let result = self.recognizer.result();
+                result.single().and_then(|single| {
+                    let text = single.text.trim();
+                    (!text.is_empty()).then(|| text.to_string())
+                })
             }
+            Ok(DecodingState::Running) => None,
+            Ok(DecodingState::Failed) | Err(_) => None,
         }
-
-        None
     }
 
     /// Проверка наличия wake word «Лекса».
@@ -93,21 +86,16 @@ impl SttEngine {
     /// Извлечение команды, произнесённой после wake word.
     pub fn extract_command_after_wake_word(text: &str) -> Option<String> {
         let lower = text.to_lowercase();
-        let mut found_wake = false;
+        let words: Vec<&str> = lower.split_whitespace().collect();
 
-        for word in lower.split_whitespace() {
+        for (index, word) in words.iter().enumerate() {
             let normalized = word.trim_matches(|c: char| !c.is_alphanumeric());
-            if !found_wake {
-                if normalized == WAKE_WORD {
-                    found_wake = true;
-                    continue;
-                }
-            } else {
-                let command = word.trim_start_matches(|c: char| !c.is_alphanumeric())
-                    .trim();
-                if !command.is_empty() {
-                    return Some(command.to_string());
-                }
+            if normalized == WAKE_WORD {
+                let command = words[index + 1..]
+                    .join(" ")
+                    .trim_matches(|c: char| !c.is_whitespace() && !c.is_alphanumeric())
+                    .to_string();
+                return if command.is_empty() { None } else { Some(command) };
             }
         }
 
@@ -140,4 +128,31 @@ pub fn find_vosk_model() -> Result<PathBuf> {
         "Модель Vosk не найдена. Положи модель в \
          src-tauri/models/vosk-model-small-ru-0.22/"
     ))
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::SttEngine;
+
+    #[test]
+    fn extracts_entire_command_after_wake_word() {
+        assert_eq!(
+            SttEngine::extract_command_after_wake_word("Лекса включи свет в гостиной"),
+            Some("включи свет в гостиной".to_string())
+        );
+    }
+
+    #[test]
+    fn returns_none_when_wake_word_has_no_command() {
+        assert_eq!(SttEngine::extract_command_after_wake_word("Лекса!"), None);
+    }
+
+    #[test]
+    fn ignores_words_before_wake_word() {
+        assert_eq!(
+            SttEngine::extract_command_after_wake_word("эй, Лекса, который час?"),
+            Some("который час?".to_string())
+        );
+    }
 }

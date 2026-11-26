@@ -7,7 +7,6 @@
 /// - speak() запускает TTS в отдельном потоке.
 
 use anyhow::{Context, Result};
-use std::io::Write;
 use std::path::PathBuf;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
@@ -122,15 +121,9 @@ impl VoiceEngine {
         audio_host: AudioHost,
         device_name: Option<String>,
     ) {
+        // Keep diagnostics portable; never assume a Unix-only /tmp path.
         fn log(msg: &str) {
-            let timestamp = chrono::Local::now().format("%H:%M:%S%.3f");
-            let entry = format!("[{}] {}\n", timestamp, msg);
-            let _ = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open("/tmp/lexa_debug.log")
-                .and_then(|mut f| f.write_all(entry.as_bytes()));
-            eprintln!("{}", msg);
+            eprintln!("[Lexa voice] {msg}");
         }
 
         log("[Engine] audio_worker START");
@@ -142,6 +135,8 @@ impl VoiceEngine {
                 log(&format!("[Engine] STT init FAILED: {}", error));
                 let message = format!("Не удалось инициализировать STT: {error}");
                 let _ = events.send(VoiceEvent::Error(message));
+                listening.store(false, Ordering::Release);
+                Self::set_state_shared(&state, &events, VoiceState::Idle);
                 return;
             }
         };
@@ -154,6 +149,8 @@ impl VoiceEngine {
                 log(&format!("[Engine] TTS init FAILED: {}", error));
                 let message = format!("Не удалось инициализировать TTS: {error}");
                 let _ = events.send(VoiceEvent::Error(message));
+                listening.store(false, Ordering::Release);
+                Self::set_state_shared(&state, &events, VoiceState::Idle);
                 return;
             }
         };
@@ -165,10 +162,9 @@ impl VoiceEngine {
         log("[Engine] Starting AudioCapture...");
         let capture = match AudioCapture::start(
             Arc::new(move |audio: &[f32]| {
-            eprintln!("[Engine] audio_callback: {} samples", audio.len());
-            let _ = std::fs::write("/tmp/lexa_debug.log", format!("[Audio] callback: {} samples\n", audio.len()));
-            let frame = audio.to_vec();
-            let _ = audio_tx.try_send(frame);
+            // The real-time audio callback must not perform disk I/O or logging.
+            // Keep it bounded: copy the frame and enqueue it without blocking.
+            let _ = audio_tx.try_send(audio.to_vec());
         }),
             audio_host,
             device_name.as_deref(),
@@ -179,6 +175,7 @@ impl VoiceEngine {
                 log(&format!("[Engine] AudioCapture FAILED: {}", error));
                 let message = format!("Не удалось запустить микрофон: {error}");
                 let _ = events.send(VoiceEvent::Error(message));
+                listening.store(false, Ordering::Release);
                 Self::set_state_shared(
                     &state,
                     &events,
