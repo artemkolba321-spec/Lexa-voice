@@ -7,6 +7,7 @@ use crate::utils;
 use cpal::traits::{DeviceTrait, HostTrait};
 use serde::Serialize;
 use serde_json::{json, Value};
+use tauri::Emitter;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -225,6 +226,7 @@ pub async fn start_listen(
     stt_model_path: Option<String>,
     audio_host_name: Option<String>,
     device_name: Option<String>,
+    app_handle: tauri::AppHandle,
     state: tauri::State<'_, VoiceStateWrapper>,
 ) -> Result<Value, String> {
     let engine_handle = Arc::clone(&state.0);
@@ -275,23 +277,29 @@ pub async fn start_listen(
         loop {
             match rx.recv_timeout(std::time::Duration::from_millis(300)) {
                 Ok(event) => {
-                    match event {
-                        VoiceEvent::StateChanged(state) => {
-                            eprintln!("Voice state changed: {:?}", state);
-                        }
-                        VoiceEvent::WakeWordDetected(text) => {
-                            eprintln!("Wake word detected: {}", text);
-                        }
-                        VoiceEvent::CommandRecognized(command) => {
-                            eprintln!("Command recognized: {}", command);
-                        }
-                        VoiceEvent::ResponseSpoken(text) => {
-                            eprintln!("Response spoken: {}", text);
-                        }
-                        VoiceEvent::Error(error) => {
-                            eprintln!("Voice error: {}", error);
-                        }
-                    }
+                    let payload = match event {
+                        VoiceEvent::StateChanged(state) => json!({
+                            "kind": "state",
+                            "state": format!("{:?}", state)
+                        }),
+                        VoiceEvent::WakeWordDetected(text) => json!({
+                            "kind": "wake-word",
+                            "text": text
+                        }),
+                        VoiceEvent::CommandRecognized(command) => json!({
+                            "kind": "command",
+                            "text": command
+                        }),
+                        VoiceEvent::ResponseSpoken(text) => json!({
+                            "kind": "response",
+                            "text": text
+                        }),
+                        VoiceEvent::Error(error) => json!({
+                            "kind": "error",
+                            "text": error
+                        }),
+                    };
+                    let _ = app_handle.emit("lexa-voice-event", payload);
                 }
 
                 Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
@@ -451,11 +459,21 @@ pub async fn list_audio_devices(
     Ok(devices)
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AudioHostInfo {
+    pub name: String,
+    pub available: bool,
+}
+
 #[tauri::command]
-pub async fn list_audio_hosts() -> Result<Vec<(String, bool)>, String> {
+pub async fn list_audio_hosts() -> Result<Vec<AudioHostInfo>, String> {
     Ok(AudioHost::all()
         .iter()
-        .map(|h| (h.name().to_string(), h.is_available()))
+        .map(|host| AudioHostInfo {
+            name: host.name().to_string(),
+            available: host.is_available(),
+        })
         .collect())
 }
 
